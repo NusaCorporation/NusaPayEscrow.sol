@@ -1,0 +1,46 @@
+/**
+ * @notice Create a payment using EIP-2612 permit (no separate approve required).
+ * @param recipient The receiver of the funds
+ * @param amount    Payment amount
+ * @param deadline  Signature validity deadline
+ * @param v,r,s     Signature components from the token owner
+ *
+ * Requirements:
+ *  - The token must support EIP-2612 (permit)
+ *  - Signature must be signed by owner=msg.sender for spender=this contract
+ */
+function createPaymentWithPermit(
+    address recipient,
+    uint256 amount,
+    uint256 deadline,
+    uint8 v, bytes32 r, bytes32 s
+)
+    external
+    whenNotPaused
+    nonReentrant
+    returns (uint256 paymentId)
+{
+    if (recipient == address(0)) revert ZeroAddress();
+    if (amount < minTxAmount) revert AmountTooSmall();
+
+    // 1) Grant allowance via signature (no on-chain approve needed)
+    IERC20Permit(address(token)).permit(
+        msg.sender, address(this), amount, deadline, v, r, s
+    );
+
+    // 2) Transfer funds into escrow and register the payment
+    token.safeTransferFrom(msg.sender, address(this), amount);
+
+    uint64 unlockAt = uint64(block.timestamp) + lockPeriod;
+    paymentId = nextPaymentId++;
+
+    payments[paymentId] = Payment({
+        sender: msg.sender,
+        recipient: recipient,
+        amount: amount,
+        unlockAt: unlockAt,
+        claimed: false
+    });
+
+    emit PaymentCreated(paymentId, msg.sender, recipient, amount, unlockAt);
+}
