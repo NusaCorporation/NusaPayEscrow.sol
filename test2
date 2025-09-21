@@ -1,0 +1,49 @@
+import { ethers } from "hardhat";
+import { expect } from "chai";
+
+describe("NusaPayEscrow", () => {
+  it("creates, claims and refunds escrow correctly", async () => {
+    const [owner, alice, bob] = await ethers.getSigners();
+
+    // ERC20 mock
+    const ERC20 = await ethers.getContractFactory("ERC20PresetMinterPauser");
+    const token = await ERC20.deploy("NUSA", "NUSA");
+    await token.waitForDeployment();
+
+    // Mint balances
+    await token.mint(alice.address, ethers.parseEther("10"));
+
+    // Deploy escrow: min=0.001, lock=60s, grace=1day
+    const Escrow = await ethers.getContractFactory("NusaPayEscrow");
+    const escrow = await Escrow.deploy(
+      await token.getAddress(),
+      ethers.parseEther("0.001"),
+      60,
+      24 * 60 * 60
+    );
+    await escrow.waitForDeployment();
+
+    // Alice approves & creates payment to Bob
+    await token.connect(alice).approve(await escrow.getAddress(), ethers.parseEther("1"));
+    const tx = await escrow.connect(alice).createPayment(bob.address, ethers.parseEther("1"));
+    const receipt = await tx.wait();
+    const paymentId = receipt!.logs[0].args?.paymentId ?? 0n;
+
+    // До unlock claim невозможен
+    await expect(escrow.connect(bob).claim(paymentId)).to.be.reverted;
+
+    // Промотаем время на 60сек
+    await ethers.provider.send("evm_increaseTime", [60]);
+    await ethers.provider.send("evm_mine", []);
+
+    // Bob получает средства
+    await expect(escrow.connect(bob).claim(paymentId))
+      .to.emit(escrow, "PaymentClaimed")
+      .withArgs(paymentId, bob.address, ethers.parseEther("1"));
+
+    // Повторный claim запрещён
+    await expect(escrow.connect(bob).claim(paymentId)).to.be.revertedWithCustomError(
+      escrow, "AlreadyClaimed"
+    );
+  });
+});
